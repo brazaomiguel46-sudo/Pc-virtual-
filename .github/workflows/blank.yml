@@ -1,0 +1,117 @@
+name: PC Virtual Enigmano - Completo
+
+on:
+  workflow_dispatch:
+    inputs:
+      ngrok_token:
+        description: 'Insira seu Authtoken do Ngrok (Obrigatório para gerar o IP)'
+        required: true
+        type: string
+      instance_number:
+        description: 'Número da Instância (1-10)'
+        required: true
+        default: '1'
+        type: string
+
+jobs:
+  deploy-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Clonando o Repositório
+        uses: actions/checkout@v4
+
+      - name: 2. Inicializando Interface do Usuário
+        run: |
+          Write-Host "==========================================================" -ForegroundColor Cyan
+          Write-Host "===        INICIANDO ENIGMANO RDP DEPLOYMENT           ===" -ForegroundColor Cyan
+          Write-Host "==========================================================" -ForegroundColor Cyan
+          Write-Host "Preparando ambiente para a Instância: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
+
+      - name: 3. Coletando Informações do Sistema Microsoft
+        run: |
+          Write-Host "=== ESPECIFICAÇÕES DO SERVIDOR ATUAL ===" -ForegroundColor Cyan
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture, WindowsBuildLabEx
+          Write-Host "=== MEMÓRIA E PROCESSAMENTO DOS CORES ===" -ForegroundColor Cyan
+          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize, FreePhysicalMemory
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, MaxClockSpeed
+
+      - name: 4. Baixando Recursos do Provedor de Túnel (Ngrok)
+        run: |
+          Write-Host "Baixando o binário oficial do Ngrok para Windows x64..." -ForegroundColor Yellow
+          Invoke-WebRequest -Uri "https://equinox.io" -OutFile "ngrok.zip"
+          Write-Host "Extraindo os arquivos compactados..." -ForegroundColor Yellow
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "ngrok_files"
+          Move-Item -Path "ngrok_files\ngrok.exe" -Destination ".\ngrok.exe"
+          Write-Host "Limpando arquivos temporários de instalação..." -ForegroundColor Yellow
+          Remove-Item -Path "ngrok.zip"
+          Remove-Item -Path "ngrok_files" -Recurse
+
+      - name: 5. Autenticando Token de Segurança
+        run: |
+          Write-Host "Aplicando a chave de criptografia de ponta a ponta..." -ForegroundColor Yellow
+          ./ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_token }}"
+
+      - name: 6. Configurando Registro do Windows (Habilitar RDP)
+        run: |
+          Write-Host "Modificando chaves HKLM do Terminal Server no Registro..." -ForegroundColor Yellow
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+          Write-Host "Configurando serviço do Windows para inicialização automática..." -ForegroundColor Yellow
+          Set-Service -Name "TermService" -StartupType Automatic
+          Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+
+      - name: 7. Liberando Regras de Tráfego no Firewall do Windows
+        run: |
+          Write-Host "Abrindo portas de entrada e saída para conexões remotas..." -ForegroundColor Yellow
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          New-NetFirewallRule -DisplayName "Bloqueio Desativado RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+
+      - name: 8. Provisionando Novo Usuário Administrador
+        run: |
+          Write-Host "Gerando credenciais do usuário de acesso..." -ForegroundColor Yellow
+          $SecurePassword = ConvertTo-SecureString "SenhaSegura123!" -AsPlainText -Force
+          $UserName = "PC_Virtual_${{ github.event.inputs.instance_number }}"
+          
+          Write-Host "Criando conta local: $UserName" -ForegroundColor Yellow
+          New-LocalUser -Name $UserName -Password $SecurePassword -Description "Perfil Gerado via GitHub Actions Workflow" -AccountNeverExpires
+          
+          Write-Host "Elevando privilégios para Grupo de Administradores..." -ForegroundColor Yellow
+          Add-LocalGroupMember -Group "Administrators" -Member $UserName
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName
+
+      - name: 9. Estabelecendo Conexão de Túnel TCP Ativo
+        run: |
+          Write-Host "Iniciando processo em segundo plano na porta 3389..." -ForegroundColor Yellow
+          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --region us"
+          Write-Host "Aguardando sincronização de rede (12 segundos)..." -ForegroundColor Yellow
+          Start-Sleep -Seconds 12
+
+      - name: 10. Extraindo Link de Conexão RDP Externa
+        run: |
+          Write-Host "Buscando endpoint público via API local do Ngrok..." -ForegroundColor Yellow
+          $TunnelData = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $PublicUrl = $TunnelData.tunnels.public_url
+          
+          $CleanUrl = $PublicUrl -replace "tcp://", ""
+          
+          Write-Host "==========================================================" -ForegroundColor Cyan
+          Write-Host "===        DADOS DE ACESSO DO SEU PC VIRTUAL           ===" -ForegroundColor Green
+          Write-Host "==========================================================" -ForegroundColor Cyan
+          Write-Host " ENDEREÇO / IP: $CleanUrl" -ForegroundColor Magenta
+          Write-Host " USUÁRIO:       PC_Virtual_${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
+          Write-Host " SENHA:         SenhaSegura123!" -ForegroundColor Yellow
+          Write-Host "==========================================================" -ForegroundColor Cyan
+          Write-Host "Copie o endereço acima e cole no aplicativo Remote Desktop do seu celular/PC." -ForegroundColor White
+
+      - name: 11. Mantendo Instância Ativa (Loop de Proteção Anti-Fechamento)
+        run: |
+          Write-Host "Monitorando conexão. O PC ficará ativo por até 6 horas." -ForegroundColor Green
+          Write-Host "Não feche esta página do GitHub para não derrubar a máquina." -ForegroundColor Red
+          $Counter = 0
+          while ($Counter -lt 360) {
+              Write-Host "Manutenção de atividade executada com sucesso. Minutos ativos: $Counter" -ForegroundColor Gray
+              Start-Sleep -Seconds 60
+              $Counter++
+          }
